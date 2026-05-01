@@ -4,6 +4,8 @@ from player import Player
 from enemy import Enemy
 from star import Star
 from bullet import Bullet, EnemyBullet
+from assets_loader import assets
+from explosion import Explosion
 import sounds
 
 # Инициализация
@@ -15,8 +17,8 @@ clock = pygame.time.Clock()
 
 def reset_game():
     """Сбрасывает игру в начальное состояние"""
-    global all_sprites, enemies, bullets, enemy_bullets, stars
-    global player, score, running
+    global all_sprites, enemies, bullets, enemy_bullets, stars, explosions
+    global player, score, running, game_active, death_timer
     
     # Очищаем все группы
     all_sprites = pygame.sprite.Group()
@@ -24,6 +26,7 @@ def reset_game():
     bullets = pygame.sprite.Group()
     enemy_bullets = pygame.sprite.Group()
     stars = pygame.sprite.Group()
+    explosions = pygame.sprite.Group()
     
     # Создаём фон из звёзд
     for _ in range(100):
@@ -37,6 +40,8 @@ def reset_game():
     
     # Сбрасываем счёт
     score = 0
+    game_active = True
+    death_timer = 0
     
     # Останавливаем все звуки
     pygame.mixer.stop()
@@ -59,7 +64,7 @@ def show_game_over():
             if event.type == pygame.QUIT:
                 return False
             elif event.type == pygame.KEYDOWN:
-                if event.key == pygame.K_r:  # ← РЕСТАРТ ПО R
+                if event.key == pygame.K_r:
                     waiting = False
                     reset_game()
                     return True
@@ -92,6 +97,7 @@ enemies = pygame.sprite.Group()
 bullets = pygame.sprite.Group()
 enemy_bullets = pygame.sprite.Group()
 stars = pygame.sprite.Group()
+explosions = pygame.sprite.Group()
 
 for _ in range(100):
     star = Star(WIDTH, HEIGHT)
@@ -112,6 +118,7 @@ pygame.time.set_timer(ENEMY_SPAWN, 1200)
 # Основной игровой цикл
 running = True
 game_active = True
+death_timer = 0
 
 while running:
     if game_active:
@@ -130,17 +137,22 @@ while running:
                         bullets.add(bullet)
                         all_sprites.add(bullet)
                         sounds.shoot_sound.play()
-                elif event.key == pygame.K_r:  # ← РЕСТАРТ В ЛЮБОЙ МОМЕНТ
+                elif event.key == pygame.K_r:
                     reset_game()
-                    pygame.time.set_timer(ENEMY_SPAWN, 1200)  # перезапускаем таймер
+                    pygame.time.set_timer(ENEMY_SPAWN, 1200)
 
         keys = pygame.key.get_pressed()
-        player.update(keys)
+        if player.alive():
+            player.update(keys)
         
+        # Обновляем всех спрайтов
         for sprite in all_sprites:
             if isinstance(sprite, Enemy):
-                sprite.update(player, enemy_bullets, all_sprites)
-            elif isinstance(sprite, (Star, Bullet, EnemyBullet)):
+                if player.alive():
+                    sprite.update(player, enemy_bullets, all_sprites)
+                else:
+                    sprite.update(None, enemy_bullets, all_sprites)
+            elif isinstance(sprite, (Star, Bullet, EnemyBullet, Explosion)):
                 sprite.update()
 
         # Столкновения пуль с врагами
@@ -148,25 +160,44 @@ while running:
         for hit in hits:
             score += 100
             sounds.explosion_sound.play()
-            enemy = Enemy(WIDTH, HEIGHT)
-            enemies.add(enemy)
-            all_sprites.add(enemy)
+            # Создаём взрыв на месте врага
+            explosion = Explosion(hit.rect.centerx, hit.rect.centery, is_player=False)
+            explosions.add(explosion)
+            all_sprites.add(explosion)
 
         # Столкновения вражеских пуль с игроком
-        hits = pygame.sprite.spritecollide(player, enemy_bullets, True)
-        if hits:
-            player.health -= 1
-            sounds.hit_sound.play()
-            if player.health <= 0:
-                game_active = False
+        if player.alive():
+            hits = pygame.sprite.spritecollide(player, enemy_bullets, True)
+            if hits:
+                player.health -= len(hits)
+                sounds.hit_sound.play()
+                if player.health <= 0:
+                    # Взрыв игрока
+                    player_explosion = Explosion(player.rect.centerx, player.rect.centery, is_player=True)
+                    explosions.add(player_explosion)
+                    all_sprites.add(player_explosion)
+                    player.kill()
+                    game_active = False
+                    death_timer = pygame.time.get_ticks()
 
         # Столкновения игрока с врагами
-        hits = pygame.sprite.spritecollide(player, enemies, True)
-        if hits:
-            player.health -= len(hits)
-            sounds.hit_sound.play()
-            if player.health <= 0:
-                game_active = False
+        if player.alive():
+            hits = pygame.sprite.spritecollide(player, enemies, True)
+            if hits:
+                player.health -= len(hits)
+                sounds.hit_sound.play()
+                for hit in hits:
+                    # Взрыв на месте врага
+                    explosion = Explosion(hit.rect.centerx, hit.rect.centery, is_player=False)
+                    explosions.add(explosion)
+                    all_sprites.add(explosion)
+                if player.health <= 0:
+                    player_explosion = Explosion(player.rect.centerx, player.rect.centery, is_player=True)
+                    explosions.add(player_explosion)
+                    all_sprites.add(player_explosion)
+                    player.kill()
+                    game_active = False
+                    death_timer = pygame.time.get_ticks()
 
         # Отрисовка
         screen.fill((5, 5, 20))
@@ -176,8 +207,11 @@ while running:
         score_text = font.render(f"Score: {score}", True, (255, 255, 255))
         screen.blit(score_text, (10, 10))
         
-        health_text = font.render(f"Health: {player.health}", True, (255, 100, 100))
-        screen.blit(health_text, (10, 50))
+        # Сердечки (только если игрок жив)
+        if player.alive():
+            heart_spacing = 35
+            for i in range(player.health):
+                screen.blit(assets.heart_full, (10 + i * heart_spacing, 50))
         
         # Подсказка
         hint_text = small_font.render("R - Restart", True, (100, 100, 100))
@@ -187,11 +221,41 @@ while running:
         clock.tick(60)
     
     else:
-        # --- Game Over ---
-        if show_game_over():
-            game_active = True
-            pygame.time.set_timer(ENEMY_SPAWN, 1200)
-        else:
-            running = False
+        # --- Game Over с задержкой для анимации взрыва ---
+        # Обновляем взрывы
+        for sprite in explosions:
+            sprite.update()
+        
+        # Отрисовываем фон и взрывы
+        screen.fill((5, 5, 20))
+        
+        # Рисуем звёзды
+        for star in stars:
+            screen.blit(star.image, star.rect)
+        
+        # Рисуем взрывы
+        for explosion in explosions:
+            screen.blit(explosion.image, explosion.rect)
+        
+        # Показываем счёт
+        score_text = font.render(f"Score: {score}", True, (255, 255, 255))
+        screen.blit(score_text, (10, 10))
+        
+        # Показываем надпись "WAITING..."
+        wait_text = small_font.render("WAITING...", True, (200, 200, 200))
+        screen.blit(wait_text, (WIDTH//2 - 40, HEIGHT//2))
+        
+        pygame.display.flip()
+        
+        # Ждём 1 секунду, пока анимация взрыва закончится
+        if pygame.time.get_ticks() - death_timer > 1000:
+            if show_game_over():
+                game_active = True
+                explosions.empty()
+                pygame.time.set_timer(ENEMY_SPAWN, 1200)
+            else:
+                running = False
+        
+        clock.tick(60)
 
 pygame.quit()
